@@ -37,11 +37,11 @@ pub const Simulation = struct {
 
         @memcpy(current_world.cells, self.world.cells);
 
-        try self.run_single(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        // if (self.world_size >= 100) {
-        //     try self.run_threaded(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        // } else {
-        // }
+        if (self.world_size >= 100) {
+            try self.run_threaded(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        } else {
+            try self.run_single(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        }
 
         @memcpy(self.world.cells, current_world.cells);
     }
@@ -103,6 +103,7 @@ pub const Simulation = struct {
         _ = try stdout.write("\n");
 
         var timer = try std.time.Timer.start();
+        var ns_prev: f64 = 0;
 
         while (try self.run_iteration(current_world, new_world, &to_check, iter, arena_alloc) and iter <= max_iterations) : (iter += 1) {
             @branchHint(std.builtin.BranchHint.likely);
@@ -111,13 +112,14 @@ pub const Simulation = struct {
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
             const iter_float: f64 = @floatFromInt(iter);
-            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s, FPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, (iter_float * std.time.ns_per_s / ns_float) });
+            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
+            ns_prev = ns_float;
         }
 
         const ns = timer.read();
         const ns_float: f64 = @floatFromInt(ns);
         const iter_float: f64 = @floatFromInt(iter);
-        try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s, FPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, (iter_float * std.time.ns_per_s / ns_float) });
+        try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
     }
 
     fn run_threaded(self: *const Simulation, current_world: *World, new_world: *World, max_iterations: usize, allocator: Allocator) !void {
@@ -142,6 +144,7 @@ pub const Simulation = struct {
         _ = try stdout.write("\n");
 
         var timer = try std.time.Timer.start();
+        var ns_prev: f64 = 0;
 
         while (mutated == 1 and iter <= max_iterations) : (iter += 1) {
             @branchHint(std.builtin.BranchHint.likely);
@@ -168,7 +171,8 @@ pub const Simulation = struct {
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
             const iter_float: f64 = @floatFromInt(iter);
-            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s, FPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, (iter_float * std.time.ns_per_s / ns_float) });
+            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
+            ns_prev = ns_float;
         }
     }
 
@@ -179,6 +183,8 @@ pub const Simulation = struct {
         var to_sleep = std.AutoHashMap(usize, void).init(arena_alloc);
         var to_wake = std.AutoHashMap(usize, void).init(arena_alloc);
 
+        var sleep = false;
+
         var mutated = false;
 
         const cells = current_world.cells;
@@ -187,7 +193,10 @@ pub const Simulation = struct {
         const species_bucket = try arena_alloc.alloc(u8, self.num_species);
 
         for (to_check.keys()) |i| {
-            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration);
+            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration, &sleep);
+
+            if (sleep) 
+                try to_sleep.put(i, {});
 
             new_world.cells[i].species = new_species;
             if (cells[i].species != new_species) {
@@ -203,8 +212,6 @@ pub const Simulation = struct {
             } else {
                 new_world.cells[i].times_mutated = cells[i].times_mutated;
                 new_world.cells[i].last_mutation = cells[i].last_mutation;
-
-                try to_sleep.put(i, {});
             }
         }
 
@@ -234,11 +241,13 @@ pub const Simulation = struct {
         
         var mutated: u8 = 0;
 
+        var sleep = false;
+
         const cells = current_world.cells;
 
         const species_bucket = try arena_alloc.alloc(u8, self.num_species);
         for (chunk_start..(chunk_size + chunk_start)) |i| {
-            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration);
+            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration, &sleep);
 
             new_world.cells[i].species = new_species;
             if (cells[i].species != new_species) {
@@ -255,8 +264,10 @@ pub const Simulation = struct {
         return mutated;
     }
 
-    inline fn getNewSpecies(self: *const Simulation, cells: []Cell, index: usize, bucket: []u8, seed: usize) u8 {
+    inline fn getNewSpecies(self: *const Simulation, cells: []Cell, index: usize, bucket: []u8, seed: usize, sleep: *bool) u8 {
         @memset(bucket, 0);
+
+        sleep.* = false;
 
         const world_size: i128 = @intCast(self.world_size);
         const surrounding = getSurrounding(world_size, index);
@@ -286,6 +297,9 @@ pub const Simulation = struct {
                 max_count = count;
             }
         }
+
+        if (max_idx == cells[index].species and max_count == 8)
+            sleep.* = true;
 
         return @intCast(max_idx);
     }
