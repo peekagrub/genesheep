@@ -37,11 +37,11 @@ pub const Simulation = struct {
 
         @memcpy(current_world.cells, self.world.cells);
 
-        if (self.world_size >= 100) {
-            try self.run_threaded(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        } else {
-            try self.run_single(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        }
+        try self.run_single(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        // if (self.world_size >= 100) {
+        //     try self.run_threaded(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        // } else {
+        // }
 
         @memcpy(self.world.cells, current_world.cells);
     }
@@ -88,6 +88,15 @@ pub const Simulation = struct {
 
         const arena_alloc = arena.allocator();
 
+        var to_check = std.AutoArrayHashMap(usize, void).init(allocator);
+        defer to_check.deinit();
+
+        try to_check.ensureTotalCapacity(self.world_size * self.world_size);
+
+        for (0..self.world_size * self.world_size) |i| {
+            try to_check.put(i, {});
+        }
+
         var iter: usize = 1;
 
         const stdout = std.io.getStdOut().writer();
@@ -95,7 +104,7 @@ pub const Simulation = struct {
 
         var timer = try std.time.Timer.start();
 
-        while (try self.run_iteration(current_world, new_world, iter, arena_alloc) and iter <= max_iterations) : (iter += 1) {
+        while (try self.run_iteration(current_world, new_world, &to_check, iter, arena_alloc) and iter <= max_iterations) : (iter += 1) {
             @branchHint(std.builtin.BranchHint.likely);
 
             _ = arena.reset(.retain_capacity);
@@ -163,9 +172,12 @@ pub const Simulation = struct {
         }
     }
 
-    fn run_iteration(self: *const Simulation, current_world: *World, new_world: *World, iteration: usize, allocator: Allocator) !bool {
+    fn run_iteration(self: *const Simulation, current_world: *World, new_world: *World, to_check: *std.AutoArrayHashMap(usize, void), iteration: usize, allocator: Allocator) !bool {
         var arena = std.heap.ArenaAllocator.init(allocator);
         const arena_alloc = arena.allocator();
+
+        var to_sleep = std.AutoHashMap(usize, void).init(arena_alloc);
+        var to_wake = std.AutoHashMap(usize, void).init(arena_alloc);
 
         var mutated = false;
 
@@ -174,7 +186,7 @@ pub const Simulation = struct {
 
         const species_bucket = try arena_alloc.alloc(u8, self.num_species);
 
-        for (0..self.world_size * self.world_size) |i| {
+        for (to_check.keys()) |i| {
             const new_species = self.getNewSpecies(cells, i, species_bucket, iteration);
 
             new_world.cells[i].species = new_species;
@@ -183,10 +195,29 @@ pub const Simulation = struct {
 
                 new_world.cells[i].times_mutated = cells[i].times_mutated + 1;
                 new_world.cells[i].last_mutation = iteration;
+
+                for (getSurrounding(@intCast(self.world_size), i)) |n| {
+                    try to_wake.put(n, {});
+                }
+                try to_wake.put(i, {});
             } else {
                 new_world.cells[i].times_mutated = cells[i].times_mutated;
                 new_world.cells[i].last_mutation = cells[i].last_mutation;
+
+                try to_sleep.put(i, {});
             }
+        }
+
+        var sleep_iter = to_sleep.keyIterator();
+
+        while (sleep_iter.next()) |k| {
+            _ = to_check.swapRemove(k.*);
+        }
+
+        var wake_iter = to_wake.keyIterator();
+
+        while(wake_iter.next()) |k| {
+            try to_check.put(k.*, {});
         }
 
         const temp = current_world.*;
