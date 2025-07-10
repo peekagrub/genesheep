@@ -8,18 +8,19 @@ pub const Cell = struct {
 };
 
 pub const World = struct {
-    cells: []Cell,
+    cells: std.MultiArrayList(Cell),
     world_size: usize,
 
     pub fn init(allocator: Allocator, world_size: usize) Allocator.Error!World {
-        var cells = try allocator.alloc(Cell, world_size * world_size);
-        const bytes = std.mem.sliceAsBytes(cells[0..cells.len]);
-        @memset(bytes, 0);
+        var cells = std.MultiArrayList(Cell){};
+
+        try cells.ensureTotalCapacity(allocator, world_size * world_size);
+
         return World{ .cells = cells, .world_size = world_size };
     }
 
     pub fn deinit(self: *World, allocator: Allocator) void {
-        allocator.free(self.cells);
+        self.cells.deinit(allocator);
     }
 
     pub fn format(self: *const World, comptime fmt: []const u8, options: std.fmt.FormatOptions, writer: anytype) !void {
@@ -28,9 +29,11 @@ pub const World = struct {
 
         try writer.print("World size: {0d}x{0d}\n", .{self.world_size});
 
+        const species = self.cells.items(.species);
+
         for (0..self.world_size) |n| {
-            for (self.cells[(self.world_size * n)..(self.world_size * (n + 1))]) |cell| {
-                try writer.print("{d: >5}", .{cell.species});
+            for (species[(self.world_size * n)..(self.world_size * (n + 1))]) |specie| {
+                try writer.print("{d: >5}", .{specie});
             }
             if (n != self.world_size)
                 try writer.print("\n", .{});
@@ -38,11 +41,18 @@ pub const World = struct {
     }
 
     pub fn equals(self: *const World, other: *const World) bool {
-        for (0.., self.cells) |i, cell| {
-            const other_cell = other.cells[i];
+        const Field = std.MultiArrayList(Cell).Field;
 
-            if (cell.species != other_cell.species or cell.times_mutated != other_cell.times_mutated or cell.last_mutation != other_cell.last_mutation)
-                return false;
+        const self_slice = self.cells.slice();
+
+        const self_ptrs = self.cells.slice().ptrs;
+        const other_ptrs = other.cells.slice().ptrs;
+
+        for (0..self_slice.len) |i| {
+            if (self_ptrs[@intFromEnum(Field.species)][i] != other_ptrs[@intFromEnum(Field.species)][i] 
+                or self_ptrs[@intFromEnum(Field.last_mutation)][i] != other_ptrs[@intFromEnum(Field.last_mutation)][i]
+                or self_ptrs[@intFromEnum(Field.times_mutated)][i] != other_ptrs[@intFromEnum(Field.times_mutated)][i]
+            ) return false;
         }
 
         return true;

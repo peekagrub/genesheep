@@ -13,6 +13,7 @@ const Cell = @import("world.zig").Cell;
 pub const Simulation = struct {
     world_size: usize,
     world: World,
+    new_world: World,
     allocator: Allocator,
     num_species: u8,
 
@@ -20,42 +21,50 @@ pub const Simulation = struct {
         var world = try World.init(allocator, world_size);
         errdefer world.deinit(allocator);
 
+        var new_world = try World.init(allocator, world_size);
+        errdefer new_world.deinit(allocator);
+
         setup(&world, num_species);
 
-        return Simulation{ .world_size = world_size, .world = world, .allocator = allocator, .num_species = num_species };
+        for (0..world_size * world_size) |_| {
+            new_world.cells.appendAssumeCapacity(.{.species = 0, .last_mutation = 0, .times_mutated = 0});
+        }
+
+        return Simulation{ .world_size = world_size, .world = world, .new_world = new_world, .allocator = allocator, .num_species = num_species };
+    }
+
+    pub fn reset(self: *Simulation) void {
+        self.world.cells.clearRetainingCapacity();
+        setup(&self.world, self.num_species);
+
+        for (0..self.world_size * self.world_size) |i| {
+            self.new_world.cells.set(i, .{.species = 0, .last_mutation = 0, .times_mutated = 0});
+        }
     }
 
     pub fn deinit(self: *Simulation) void {
         self.world.deinit(self.allocator);
+        self.new_world.deinit(self.allocator);
     }
 
     pub fn run(self: *Simulation, max_iterations: usize, allocator: Allocator) !void {
-        var new_world = try World.init(allocator, self.world_size);
-        defer new_world.deinit(allocator);
+        var current_world = try World.init(allocator, self.world_size);
+        defer current_world.deinit(allocator);
 
-        // var current_world = try World.init(allocator, self.world_size);
-        // defer current_world.deinit(allocator);
-        // var init_world = try World.init(allocator, self.world_size);
-        // defer init_world.deinit(allocator);
-        //
-        // @memcpy(current_world.cells, self.world.cells);
-        // @memcpy(init_world.cells, self.world.cells);
-        //
-        // try self.run_single(&self.world, &new_world, max_iterations, allocator);
-        // try self.run_threaded(&current_world, &new_world, max_iterations, allocator);
-        //
-        // if (!self.world.equals(&current_world)) {
-        //     std.debug.print("{any}\n", .{init_world});
-        // }
-        // std.debug.assert(self.world.equals(&current_world));
-        //
-        // @memcpy(self.world.cells, current_world.cells);
-
-        if (self.world_size >= 100) {
-            try self.run_threaded(&self.world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        } else {
-            try self.run_single(&self.world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        for (self.world.cells.items(.species)) |species| {
+            current_world.cells.appendAssumeCapacity(.{.species = species, .last_mutation = 0, .times_mutated = 0});
         }
+
+        try self.run_single(&self.world, &self.new_world, max_iterations, allocator);
+        try self.run_threaded(&current_world, &self.new_world, max_iterations, allocator);
+
+        std.debug.assert(self.world.equals(&current_world));
+
+        // if (self.world_size >= 100) {
+        //     try self.run_threaded(&self.world, &self.new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        // } else {
+        //     try self.run_single(&self.world, &self.new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        // }
     }
 
     pub fn render(self: *const Simulation, image: *Image, strength: f32) !usize {
@@ -64,9 +73,9 @@ pub const Simulation = struct {
         const rand = prng.random();
 
         var max: usize = 0;
-        for (self.world.cells) |cell| {
-            if (cell.last_mutation > max)
-                max = cell.last_mutation;
+        for (self.world.cells.items(.last_mutation)) |last_mutation| {
+            if (last_mutation > max)
+                max = last_mutation;
         }
 
         max += 1;
@@ -87,8 +96,8 @@ pub const Simulation = struct {
             iteration_color.value = std.math.clamp(iteration_color.value, 0.0, 1.0);
         }
 
-        for (self.world.cells, image.pixels.rgba32) |cell, *pixel| {
-            pixel.* = color_list[cell.last_mutation];
+        for (self.world.cells.items(.last_mutation), image.pixels.rgba32) |last_mutation, *pixel| {
+            pixel.* = color_list[last_mutation];
         }
 
         return max - 1;
@@ -122,6 +131,10 @@ pub const Simulation = struct {
             @branchHint(std.builtin.BranchHint.likely);
 
             mutated = try self.run_iteration(current_world, new_world, &to_check, iterations, arena_alloc);
+
+            const temp = current_world.*;
+            current_world.* = new_world.*;
+            new_world.* = temp;
 
             _ = arena.reset(.retain_capacity);
             const ns = timer.read();
@@ -196,32 +209,30 @@ pub const Simulation = struct {
 
         var mutated = false;
 
-        const cells = current_world.cells;
-
-
         const species_bucket = try arena_alloc.alloc(u8, self.num_species);
         for (to_check.keys()) |i| {
-            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration, &sleep);
+            const new_species = self.getNewSpecies(current_world.cells.items(.species), i, species_bucket, iteration, &sleep);
+
+            const current_cell = current_world.cells.get(i);
 
             if (sleep) {
                 try to_sleep.put(i, {});
             }
 
-            new_world.cells[i].species = new_species;
-            if (cells[i].species != new_species) {
+            new_world.cells.items(.species)[i] = new_species;
+            if (current_cell.species != new_species) {
                 mutated = true;
 
-                new_world.cells[i].times_mutated = cells[i].times_mutated + 1;
-                new_world.cells[i].last_mutation = iteration;
+                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated + 1;
+                new_world.cells.items(.last_mutation)[i] = iteration;
 
                 inline for (getSurrounding(@intCast(self.world_size), i)) |n| {
                     try to_wake.put(n, {});
                 }
                 try to_wake.put(i, {});
-            }
-            else {
-                new_world.cells[i].times_mutated = cells[i].times_mutated;
-                new_world.cells[i].last_mutation = cells[i].last_mutation;
+            } else {
+                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated;
+                new_world.cells.items(.last_mutation)[i] = current_cell.last_mutation;
             }
         }
 
@@ -237,10 +248,6 @@ pub const Simulation = struct {
             try to_check.put(k.*, {});
         }
 
-        const temp = current_world.*;
-        current_world.* = new_world.*;
-        new_world.* = temp;
-
         return mutated;
     }
 
@@ -253,28 +260,29 @@ pub const Simulation = struct {
 
         var sleep = false;
 
-        const cells = current_world.cells;
-
         const species_bucket = try arena_alloc.alloc(u8, self.num_species);
         for (chunk_start..(chunk_size + chunk_start)) |i| {
-            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration, &sleep);
+            const new_species = self.getNewSpecies(current_world.cells.items(.species), i, species_bucket, iteration, &sleep);
 
-            new_world.cells[i].species = new_species;
-            if (cells[i].species != new_species) {
+            const current_cell = current_world.cells.get(i);
+
+            new_world.cells.items(.species)[i] = new_species;
+            if (current_cell.species != new_species) {
                 mutated = 1;
 
-                new_world.cells[i].times_mutated = cells[i].times_mutated + 1;
-                new_world.cells[i].last_mutation = iteration;
+                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated + 1;
+                new_world.cells.items(.last_mutation)[i] = iteration;
+
             } else {
-                new_world.cells[i].times_mutated = cells[i].times_mutated;
-                new_world.cells[i].last_mutation = cells[i].last_mutation;
+                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated;
+                new_world.cells.items(.last_mutation)[i] = current_cell.last_mutation;
             }
         }
 
         return mutated;
     }
 
-    inline fn getNewSpecies(self: *const Simulation, cells: []Cell, index: usize, bucket: []u8, seed: usize, sleep: *bool) u8 {
+    inline fn getNewSpecies(self: *const Simulation, cells: []u8, index: usize, bucket: []u8, seed: usize, sleep: *bool) u8 {
         @memset(bucket, 0);
 
         sleep.* = false;
@@ -282,18 +290,18 @@ pub const Simulation = struct {
         const world_size: i128 = @intCast(self.world_size);
         const surrounding = getSurrounding(world_size, index);
 
-        bucket[cells[surrounding[0]].species] += 1;
-        bucket[cells[surrounding[1]].species] += 1;
-        bucket[cells[surrounding[2]].species] += 1;
+        bucket[cells[surrounding[0]]] += 1;
+        bucket[cells[surrounding[1]]] += 1;
+        bucket[cells[surrounding[2]]] += 1;
 
-        bucket[cells[surrounding[3]].species] += 1;
-        bucket[cells[surrounding[4]].species] += 1;
+        bucket[cells[surrounding[3]]] += 1;
+        bucket[cells[surrounding[4]]] += 1;
 
-        bucket[cells[surrounding[5]].species] += 1;
-        bucket[cells[surrounding[6]].species] += 1;
-        bucket[cells[surrounding[7]].species] += 1;
+        bucket[cells[surrounding[5]]] += 1;
+        bucket[cells[surrounding[6]]] += 1;
+        bucket[cells[surrounding[7]]] += 1;
 
-        var prng = std.Random.Xoshiro256.init((cells[index].species ^ seed) * 1099511628211);
+        var prng = std.Random.Xoshiro256.init((cells[index] ^ seed) * 1099511628211);
         const test_rand = prng.random();
 
         var max_idx: usize = 0;
@@ -332,21 +340,22 @@ pub const Simulation = struct {
         };
     }
 
-    pub inline fn setup(world: *World, num_species: u8) void {
+    inline fn setup(world: *World, num_species: u8) void {
         const seed = std.crypto.random.int(u64);
         var prng = std.Random.DefaultPrng.init(seed);
         const rand = prng.random();
 
-        for (world.cells) |*elem| {
+        for (0..world.world_size * world.world_size) |_| {
             const species = rand.intRangeAtMost(u8, 0, num_species - 1);
-            elem.species = species;
+            world.cells.appendAssumeCapacity(.{.species = species, .last_mutation = 0, .times_mutated = 0});
         }
     }
 
     inline fn setup_consistent(world: *World, num_species: u8) void {
-        for (0.., world.cells) |i, *elem| {
+        for (0..world.world_size * world.world_size) |i| {
             const x: i128 = @intCast(@divFloor(i, world.world_size));
-            elem.species = @intCast(@mod(x, num_species));
+            const species: u8 = @intCast(@mod(x, num_species));
+            world.cells.appendAssumeCapacity(.{.species = species, .last_mutation = 0, .times_mutated = 0});
         }
     }
 };
