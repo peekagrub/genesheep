@@ -88,29 +88,28 @@ fn run_genesheep() !void {
     _ = try stdout.write("\u{1b}[?25l");
     defer stdout.print("\u{1b}[?25h", .{}) catch {};
 
-    Simulation.setup(&sim.world, config.num_species);
     while (true) {
         if (sim.run(config.max_iterations, allocator)) {
-            // var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
-            // defer image.deinit();
-            //
-            // const iterations = try sim.render(&image, config.mut_strength);
-            //
-            // const time = c.time(null);
-            // const local_time = c.localtime(&time);
-            //
-            // const file_name = try format_time(local_time, iterations, allocator);
-            // defer allocator.free(file_name);
-            //
-            // try image.writeToFilePath(file_name, .{ .png = .{} });
-            // try stdout.print("Saved image {s}\n", .{file_name});
+            var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
+            defer image.deinit();
+
+            const iterations = try sim.render(&image, config.mut_strength);
+
+            const time = c.time(null);
+            const local_time = c.localtime(&time);
+
+            const file_name = try format_time(local_time, iterations, allocator);
+            defer allocator.free(file_name);
+
+            try image.writeToFilePath(file_name, .{ .png = .{} });
+            try stdout.print("Saved image {s}\n", .{file_name});
         } else |err| {
             try stdout.print("Error: {any}", .{err});
         }
 
         if (!config.batch) break;
 
-        Simulation.setup(&sim.world, config.num_species);
+        sim.reset();
     }
 }
 
