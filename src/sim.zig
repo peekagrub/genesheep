@@ -35,9 +35,19 @@ pub const Simulation = struct {
         var new_world = try World.init(allocator, self.world_size);
         defer new_world.deinit(allocator);
 
-        @memcpy(current_world.cells, self.world.cells);
+        var init_world = try World.init(allocator, self.world_size);
+        defer init_world.deinit(allocator);
 
-        try self.run_threaded_test(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        @memcpy(current_world.cells, self.world.cells);
+        @memcpy(init_world.cells, self.world.cells);
+
+        try self.run_single(&self.world, &new_world, max_iterations, allocator);
+        try self.run_threaded(&current_world, &new_world, max_iterations, allocator);
+
+        if (!self.world.equals(&current_world)) {
+            std.debug.print("{any}\n", .{init_world});
+        }
+        std.debug.assert(self.world.equals(&current_world));
 
         // if (self.world_size >= 100) {
         //     try self.run_threaded(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
@@ -99,7 +109,8 @@ pub const Simulation = struct {
             try to_check.put(i, {});
         }
 
-        var iter: usize = 1;
+        var mutated = true;
+        var iterations: usize = 1;
 
         const stdout = std.io.getStdOut().writer();
         _ = try stdout.write("\n");
@@ -107,21 +118,18 @@ pub const Simulation = struct {
         var timer = try std.time.Timer.start();
         var ns_prev: f64 = 0;
 
-        while (try self.run_iteration(current_world, new_world, &to_check, iter, arena_alloc) and iter <= max_iterations) : (iter += 1) {
+        while (mutated and iterations <= max_iterations) : (iterations += 1) {
             @branchHint(std.builtin.BranchHint.likely);
+
+            mutated = try self.run_iteration(current_world, new_world, &to_check, iterations, arena_alloc);
 
             _ = arena.reset(.retain_capacity);
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
-            const iter_float: f64 = @floatFromInt(iter);
-            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
+            const iter_float: f64 = @floatFromInt(iterations);
+            try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >9.3}, IPS: {d: >9.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
             ns_prev = ns_float;
         }
-
-        const ns = timer.read();
-        const ns_float: f64 = @floatFromInt(ns);
-        const iter_float: f64 = @floatFromInt(iter);
-        try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
     }
 
     fn run_threaded(self: *const Simulation, current_world: *World, new_world: *World, max_iterations: usize, allocator: Allocator) !void {
@@ -133,14 +141,14 @@ pub const Simulation = struct {
         const thread_alloc = thread_allocator.allocator();
 
         var pool: std.Thread.Pool = undefined;
-        const num_threads = std.Thread.getCpuCount() catch 8;
+        const num_threads = std.Thread.getCpuCount() catch 4;
         try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
         defer pool.deinit();
 
         var wg: std.Thread.WaitGroup = .{};
 
         var mutated: u8 = 1;
-        var iter: usize = 1;
+        var iterations: usize = 1;
 
         const stdout = std.io.getStdOut().writer();
         _ = try stdout.write("\n");
@@ -148,18 +156,17 @@ pub const Simulation = struct {
         var timer = try std.time.Timer.start();
         var ns_prev: f64 = 0;
 
-        while (mutated == 1 and iter <= max_iterations) : (iter += 1) {
+        while (mutated == 1 and iterations <= max_iterations) : (iterations += 1) {
             @branchHint(std.builtin.BranchHint.likely);
 
-            @memcpy(new_world.cells, current_world.cells);
             mutated = 0;
             for (0..self.world_size) |i| {
                 pool.spawnWg(&wg, struct {
-                    fn run(sim: *const Simulation, cur_world: *World, next_world: *World, iteration: usize, alloc: Allocator, chunk_start: usize, chunk_size: usize, mut: *u8) void {
-                        const result = sim.run_iteration_chunk(cur_world, next_world, iteration, alloc, chunk_start, chunk_size) catch 2;
-                        mut.* |= result;
+                    fn run(sim: *const Simulation, _current_world: *World, _new_world: *World, _iteration: usize, _allocator: Allocator, _chunk_start: usize, _chunk_size: usize, _mutated: *u8) void {
+                        const result = sim.run_iteration_chunk(_current_world, _new_world, _iteration, _allocator, _chunk_start, _chunk_size) catch 2;
+                        _ = @cmpxchgStrong(u8, _mutated, 0, result, .monotonic, .monotonic);
                     }
-                }.run, .{ self, current_world, new_world, iter, thread_alloc, i * self.world_size, self.world_size, &mutated });
+                }.run, .{ self, current_world, new_world, iterations, thread_alloc, i * self.world_size, self.world_size, &mutated });
             }
 
             wg.wait();
@@ -172,98 +179,8 @@ pub const Simulation = struct {
             _ = arena.reset(.retain_capacity);
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
-            const iter_float: f64 = @floatFromInt(iter);
-            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
-            ns_prev = ns_float;
-        }
-    }
-
-    fn run_threaded_test(self: *const Simulation, current_world: *World, new_world: *World, max_iterations: usize, allocator: Allocator) !void {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const arena_alloc = arena.allocator();
-
-        var thread_allocator = std.heap.ThreadSafeAllocator{ .child_allocator = arena_alloc };
-        const thread_alloc = thread_allocator.allocator();
-
-        var pool: std.Thread.Pool = undefined;
-        const num_threads = std.Thread.getCpuCount() catch 10;
-        try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
-        defer pool.deinit();
-
-        var wg: std.Thread.WaitGroup = .{};
-
-        var to_check = std.AutoArrayHashMap(usize, void).init(allocator);
-        defer to_check.deinit();
-
-        try to_check.ensureTotalCapacity(self.world_size * self.world_size);
-
-        for (0..self.world_size * self.world_size) |i| {
-            try to_check.put(i, {});
-        }
-
-        var mutated: u8 = 1;
-        var iter: usize = 1;
-
-        const stdout = std.io.getStdOut().writer();
-        _ = try stdout.write("\n");
-
-        var lock = std.Thread.RwLock{};
-
-        var timer = try std.time.Timer.start();
-        var ns_prev: f64 = 0;
-
-        while (mutated == 1 and iter <= max_iterations) : (iter += 1) {
-            @branchHint(std.builtin.BranchHint.likely);
-
-            var to_sleep = std.AutoHashMap(usize, void).init(arena_alloc);
-            var to_wake = std.AutoHashMap(usize, void).init(arena_alloc);
-
-            const count = to_check.count();
-            const chunks = @divFloor(count, self.world_size);
-            const chunk_size = @divFloor(chunks, count);
-
-            @memcpy(new_world.cells, current_world.cells);
-            mutated = 0;
-            for (0..chunks) |i| {
-                pool.spawnWg(&wg, struct {
-                    fn run(sim: *const Simulation, cur_world: *World, next_world: *World, iteration: usize, _allocator: Allocator, _to_check: []usize, _lock: *std.Thread.RwLock, _to_sleep: *std.AutoHashMap(usize, void), _to_wake: *std.AutoHashMap(usize, void), mut: *u8) void {
-                        const result = sim.run_iteration_chunk_test(cur_world, next_world, iteration, _allocator, _to_check, _lock, _to_sleep, _to_wake) catch 2;
-                        mut.* |= result;
-                    }
-                }.run, .{ self, current_world, new_world, iter, thread_alloc, to_check.keys()[(i * chunk_size)..((i + 1) * chunk_size)], &lock, &to_sleep, &to_wake, &mutated });
-            }
-            pool.spawnWg(&wg, struct {
-                fn run(sim: *const Simulation, cur_world: *World, next_world: *World, iteration: usize, _allocator: Allocator, _to_check: []usize, _lock: *std.Thread.RwLock, _to_sleep: *std.AutoHashMap(usize, void), _to_wake: *std.AutoHashMap(usize, void), mut: *u8) void {
-                    const result = sim.run_iteration_chunk_test(cur_world, next_world, iteration, _allocator, _to_check, _lock, _to_sleep, _to_wake) catch 2;
-                    mut.* |= result;
-                }
-            }.run, .{ self, current_world, new_world, iter, thread_alloc, to_check.keys()[(chunks * chunk_size)..], &lock, &to_sleep, &to_wake, &mutated });
-
-            wg.wait();
-            wg.reset();
-
-            const temp = current_world.*;
-            current_world.* = new_world.*;
-            new_world.* = temp;
-
-            var sleep_iter = to_sleep.keyIterator();
-
-            while (sleep_iter.next()) |k| {
-                _ = to_check.swapRemove(k.*);
-            }
-
-            var wake_iter = to_wake.keyIterator();
-
-            while (wake_iter.next()) |k| {
-                try to_check.put(k.*, {});
-            }
-
-            _ = arena.reset(.retain_capacity);
-            const ns = timer.read();
-            const ns_float: f64 = @floatFromInt(ns);
-            const iter_float: f64 = @floatFromInt(iter);
-            try stdout.print("\u{1b}[1A\rIteration: {d}, Durration: {d:.3}s,\tFPS: {d:.3},\tIPS: {d:.3}\n", .{ iter, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
+            const iter_float: f64 = @floatFromInt(iterations);
+            try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >9.3}, IPS: {d: >9.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
             ns_prev = ns_float;
         }
     }
@@ -280,15 +197,15 @@ pub const Simulation = struct {
         var mutated = false;
 
         const cells = current_world.cells;
-        @memcpy(new_world.cells, current_world.cells);
+
 
         const species_bucket = try arena_alloc.alloc(u8, self.num_species);
-
         for (to_check.keys()) |i| {
             const new_species = self.getNewSpecies(cells, i, species_bucket, iteration, &sleep);
 
-            if (sleep) 
+            if (sleep) {
                 try to_sleep.put(i, {});
+            }
 
             new_world.cells[i].species = new_species;
             if (cells[i].species != new_species) {
@@ -297,10 +214,12 @@ pub const Simulation = struct {
                 new_world.cells[i].times_mutated = cells[i].times_mutated + 1;
                 new_world.cells[i].last_mutation = iteration;
 
-                for (getSurrounding(@intCast(self.world_size), i)) |n| {
+                inline for (getSurrounding(@intCast(self.world_size), i)) |n| {
                     try to_wake.put(n, {});
                 }
-            } else {
+                try to_wake.put(i, {});
+            }
+            else {
                 new_world.cells[i].times_mutated = cells[i].times_mutated;
                 new_world.cells[i].last_mutation = cells[i].last_mutation;
             }
@@ -355,65 +274,6 @@ pub const Simulation = struct {
         return mutated;
     }
 
-    fn run_iteration_chunk_test(self: *const Simulation, current_world: *World, new_world: *World, iteration: usize, allocator: Allocator, to_check: []usize, lock: *std.Thread.RwLock, to_sleep: *std.AutoHashMap(usize, void), to_wake: *std.AutoHashMap(usize, void)) !u8 {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-
-        const arena_alloc = arena.allocator();
-
-        var local_to_sleep = std.AutoHashMap(usize, void).init(arena_alloc);
-        var local_to_wake = std.AutoHashMap(usize, void).init(arena_alloc);
-        
-        var mutated: u8 = 0;
-
-        var sleep = false;
-
-        lock.lockShared();
-
-        const cells = current_world.cells;
-
-        const species_bucket = try arena_alloc.alloc(u8, self.num_species);
-        for (to_check) |i| {
-            const new_species = self.getNewSpecies(cells, i, species_bucket, iteration, &sleep);
-
-            if (sleep)
-                try local_to_sleep.put(i, {});
-
-            new_world.cells[i].species = new_species;
-            if (cells[i].species != new_species) {
-                mutated = 1;
-
-                new_world.cells[i].times_mutated = cells[i].times_mutated + 1;
-                new_world.cells[i].last_mutation = iteration;
-
-                for (getSurrounding(@intCast(self.world_size), i)) |k| {
-                    try local_to_wake.put(k, {});
-                }
-            } else {
-                new_world.cells[i].times_mutated = cells[i].times_mutated;
-                new_world.cells[i].last_mutation = cells[i].last_mutation;
-            }
-        }
-
-        lock.unlockShared();
-        lock.lock();
-
-        var sleep_iter = local_to_sleep.keyIterator();
-
-        while (sleep_iter.next()) |k| {
-            try to_sleep.put(k.*, {});
-        }
-
-        var wake_iter = local_to_wake.keyIterator();
-
-        while (wake_iter.next()) |k| {
-            try to_wake.put(k.*, {});
-        }
-
-        lock.unlock();
-
-        return mutated;
-    }
-
     inline fn getNewSpecies(self: *const Simulation, cells: []Cell, index: usize, bucket: []u8, seed: usize, sleep: *bool) u8 {
         @memset(bucket, 0);
 
@@ -448,7 +308,7 @@ pub const Simulation = struct {
             }
         }
 
-        if (max_idx == cells[index].species and max_count == 8)
+        if (max_count >= 5)
             sleep.* = true;
 
         return @intCast(max_idx);

@@ -11,6 +11,7 @@ const c = @cImport({
 
 var config = struct {
     world_size: usize = 10,
+    max_iterations: usize = 10000000,
     num_species: u8 = 5,
     mut_strength: f32 = 1.0,
     batch: bool = false,
@@ -39,6 +40,12 @@ pub fn main() !void {
                     .short_alias = 'w',
                     .value_ref = r.mkRef(&config.world_size),
                     .help = "Square world size of the simulation",
+                },
+                cli.Option{
+                    .long_name = "max_iterations",
+                    .short_alias = 'i',
+                    .value_ref = r.mkRef(&config.max_iterations),
+                    .help = "Max number of iterations before the simulation is forcibly stopped",
                 },
                 cli.Option{
                     .long_name = "num_species",
@@ -81,43 +88,27 @@ fn run_genesheep() !void {
     _ = try stdout.write("\u{1b}[?25l");
     defer stdout.print("\u{1b}[?25h", .{}) catch {};
 
-    if (sim.run(10000000, allocator)) {
-        var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
-        defer image.deinit();
-
-        const iterations = try sim.render(&image, config.mut_strength);
-
-        const time = c.time(null);
-        const local_time = c.localtime(&time);
-
-        const file_name = try format_time(local_time, iterations, allocator);
-        defer allocator.free(file_name);
-
-        try image.writeToFilePath(file_name, .{ .png = .{} });
-        try stdout.print("Saved image {s}\n", .{file_name});
-    } else |err| {
-        try stdout.print("Error: {any}", .{err});
-    }
-
     Simulation.setup(&sim.world, config.num_species);
-    while (config.batch) {
-        if (sim.run(10000000, allocator)) {
-            var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
-            defer image.deinit();
-
-            const iterations = try sim.render(&image, config.mut_strength);
-
-            const time = c.time(null);
-            const local_time = c.localtime(&time);
-
-            const file_name = try format_time(local_time, iterations, allocator);
-            defer allocator.free(file_name);
-
-            try image.writeToFilePath(file_name, .{ .png = .{} });
-            try stdout.print("Saved image {s}\n", .{file_name});
+    while (true) {
+        if (sim.run(config.max_iterations, allocator)) {
+            // var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
+            // defer image.deinit();
+            //
+            // const iterations = try sim.render(&image, config.mut_strength);
+            //
+            // const time = c.time(null);
+            // const local_time = c.localtime(&time);
+            //
+            // const file_name = try format_time(local_time, iterations, allocator);
+            // defer allocator.free(file_name);
+            //
+            // try image.writeToFilePath(file_name, .{ .png = .{} });
+            // try stdout.print("Saved image {s}\n", .{file_name});
         } else |err| {
             try stdout.print("Error: {any}", .{err});
         }
+
+        if (!config.batch) break;
 
         Simulation.setup(&sim.world, config.num_species);
     }
