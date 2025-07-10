@@ -30,32 +30,32 @@ pub const Simulation = struct {
     }
 
     pub fn run(self: *Simulation, max_iterations: usize, allocator: Allocator) !void {
-        var current_world = try World.init(allocator, self.world_size);
-        defer current_world.deinit(allocator);
         var new_world = try World.init(allocator, self.world_size);
         defer new_world.deinit(allocator);
 
-        var init_world = try World.init(allocator, self.world_size);
-        defer init_world.deinit(allocator);
-
-        @memcpy(current_world.cells, self.world.cells);
-        @memcpy(init_world.cells, self.world.cells);
-
-        try self.run_single(&self.world, &new_world, max_iterations, allocator);
-        try self.run_threaded(&current_world, &new_world, max_iterations, allocator);
-
-        if (!self.world.equals(&current_world)) {
-            std.debug.print("{any}\n", .{init_world});
-        }
-        std.debug.assert(self.world.equals(&current_world));
-
-        // if (self.world_size >= 100) {
-        //     try self.run_threaded(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        // } else {
-        //     try self.run_single(&current_world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        // var current_world = try World.init(allocator, self.world_size);
+        // defer current_world.deinit(allocator);
+        // var init_world = try World.init(allocator, self.world_size);
+        // defer init_world.deinit(allocator);
+        //
+        // @memcpy(current_world.cells, self.world.cells);
+        // @memcpy(init_world.cells, self.world.cells);
+        //
+        // try self.run_single(&self.world, &new_world, max_iterations, allocator);
+        // try self.run_threaded(&current_world, &new_world, max_iterations, allocator);
+        //
+        // if (!self.world.equals(&current_world)) {
+        //     std.debug.print("{any}\n", .{init_world});
         // }
+        // std.debug.assert(self.world.equals(&current_world));
+        //
+        // @memcpy(self.world.cells, current_world.cells);
 
-        @memcpy(self.world.cells, current_world.cells);
+        if (self.world_size >= 100) {
+            try self.run_threaded(&self.world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        } else {
+            try self.run_single(&self.world, &new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
+        }
     }
 
     pub fn render(self: *const Simulation, image: *Image, strength: f32) !usize {
