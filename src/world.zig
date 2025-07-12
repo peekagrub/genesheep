@@ -5,6 +5,8 @@ pub const Cell = struct {
     times_mutated: usize,
     last_mutation: usize,
     species: u8,
+
+    pub const Field = std.meta.FieldEnum(@This());
 };
 
 pub const World = struct {
@@ -41,17 +43,15 @@ pub const World = struct {
     }
 
     pub fn equals(self: *const World, other: *const World) bool {
-        const Field = std.MultiArrayList(Cell).Field;
-
         const self_slice = self.cells.slice();
 
         const self_ptrs = self.cells.slice().ptrs;
         const other_ptrs = other.cells.slice().ptrs;
 
         for (0..self_slice.len) |i| {
-            if (self_ptrs[@intFromEnum(Field.species)][i] != other_ptrs[@intFromEnum(Field.species)][i] 
-                or self_ptrs[@intFromEnum(Field.last_mutation)][i] != other_ptrs[@intFromEnum(Field.last_mutation)][i]
-                or self_ptrs[@intFromEnum(Field.times_mutated)][i] != other_ptrs[@intFromEnum(Field.times_mutated)][i]
+            if (self_ptrs[@intFromEnum(Cell.Field.species)][i] != other_ptrs[@intFromEnum(Cell.Field.species)][i] 
+                or self_ptrs[@intFromEnum(Cell.Field.last_mutation)][i] != other_ptrs[@intFromEnum(Cell.Field.last_mutation)][i]
+                or self_ptrs[@intFromEnum(Cell.Field.times_mutated)][i] != other_ptrs[@intFromEnum(Cell.Field.times_mutated)][i]
             ) return false;
         }
 
