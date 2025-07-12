@@ -40,12 +40,14 @@ pub fn build(b: *std.Build) void {
         .optimize = optimize,
     });
 
+
+    const zigcli_dependency = b.dependency("cli", .{
+        .target = target,
+        .optimize = optimize,
+    });
+
     exe.root_module.addImport("zigimg", zigimg_dependency.module("zigimg"));
-
-    const zigcli_dep = b.dependency("cli", .{ .target = target });
-    const zigcli_mod = zigcli_dep.module("cli");
-
-    exe.root_module.addImport("zig-cli", zigcli_mod);
+    exe.root_module.addImport("cli", zigcli_dependency.module("cli"));
 
     // This declares intent for the executable to be installed into the
     // standard location when the user invokes the "install" step (the default
