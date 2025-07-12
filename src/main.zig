@@ -1,6 +1,6 @@
 const std = @import("std");
 const zigimg = @import("zigimg");
-const cli = @import("zig-cli");
+const cli = @import("cli");
 const Allocator = std.mem.Allocator;
 const Simulation = @import("sim.zig").Simulation;
 const World = @import("world.zig").World;
@@ -11,10 +11,10 @@ const c = @cImport({
 
 var config = struct {
     world_size: usize = 10,
-    max_iterations: usize = 10000000,
+    max_iterations: usize = 0,
     num_species: u8 = 5,
     mut_strength: f32 = 1.0,
-    batch: bool = false,
+    batch: std.meta.Int(.signed, @typeInfo(usize).int.bits + 1) = 0,
 
     alloc: ?Allocator = null,
 }{};
@@ -39,31 +39,31 @@ pub fn main() !void {
                     .long_name = "world_size",
                     .short_alias = 'w',
                     .value_ref = r.mkRef(&config.world_size),
-                    .help = "Square world size of the simulation",
+                    .help = "Square world size of the simulation. Default is 500x500.",
                 },
                 cli.Option{
                     .long_name = "max_iterations",
                     .short_alias = 'i',
                     .value_ref = r.mkRef(&config.max_iterations),
-                    .help = "Max number of iterations before the simulation is forcibly stopped",
+                    .help = "Max number of iterations before the simulation is forcibly stopped, 0 means run indefinitely. Default is 0.",
                 },
                 cli.Option{
                     .long_name = "num_species",
                     .short_alias = 'n',
                     .value_ref = r.mkRef(&config.num_species),
-                    .help = "The number of species in the simulation",
+                    .help = "The number of species in the simulation. Default is 5.",
                 },
                 cli.Option{
                     .long_name = "mut_str",
                     .short_alias = 'm',
                     .value_ref = r.mkRef(&config.mut_strength),
-                    .help = "The mutation strenght of the colors",
+                    .help = "The mutation strenght of the colors. Default is 1.0",
                 },
                 cli.Option{
                     .long_name = "batch",
                     .short_alias = 'b',
                     .value_ref = r.mkRef(&config.batch),
-                    .help = "Run as batch",
+                    .help = "Number of batches to run, negative numbers mean maximum number of iterations. Default is 0.",
                 },
             }),
             .target = .{
@@ -79,6 +79,20 @@ pub fn main() !void {
 }
 
 fn run_genesheep() !void {
+    const max_iterations: usize = blk: {
+        if (config.max_iterations == 0) {
+            break :blk std.math.maxInt(usize);
+        }
+        break :blk config.max_iterations;
+    };
+
+    const batch: usize = blk: {
+        if (config.batch < 0) {
+            break :blk std.math.maxInt(usize);
+        }
+        break :blk @intCast(config.batch);
+    };
+
     const allocator = config.alloc.?;
 
     var sim = try Simulation.init(config.world_size, config.num_species, allocator);
@@ -88,8 +102,15 @@ fn run_genesheep() !void {
     _ = try stdout.write("\u{1b}[?25l");
     defer stdout.print("\u{1b}[?25h", .{}) catch {};
 
-    while (true) {
-        if (sim.run(config.max_iterations, allocator)) {
+    var batch_num: usize = 0;
+
+    while (true) : (batch_num += 1) {
+        if (batch <= batch_num) {
+            @branchHint(.unlikely);
+            break;
+        }
+
+        if (sim.run(max_iterations, allocator)) {
             var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
             defer image.deinit();
 
@@ -107,8 +128,6 @@ fn run_genesheep() !void {
             try stdout.print("Error: {any}", .{err});
         }
 
-        if (!config.batch) break;
-
         sim.reset();
     }
 }
@@ -121,5 +140,5 @@ fn format_time(local_time: [*c]c.struct_tm, iterations: usize, allocator: std.me
     const minute: u8 = @intCast(local_time.*.tm_min);
     const second: u8 = @intCast(local_time.*.tm_sec);
 
-    return std.fmt.allocPrint(allocator, "{d}-{d:0>2}-{:0>2} {:0>2}-{:0>2}-{d}_i{:0>2}.png", .{ year, month, day, hour, minute, second, iterations });
+    return std.fmt.allocPrint(allocator, "{d}-{d:0>2}-{:0>2} {:0>2}-{:0>2}-{d:0>2}_i{d}.png", .{ year, month, day, hour, minute, second, iterations });
 }
