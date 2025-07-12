@@ -10,10 +10,11 @@ const IterationError = error{IterationError}.IterationError;
 const World = @import("world.zig").World;
 const Cell = @import("world.zig").Cell;
 
+const SignedWorldSize = std.meta.Int(.signed, @typeInfo(usize).int.bits + 1);
+
 pub const Simulation = struct {
     world_size: usize,
     world: World,
-    new_world: World,
     allocator: Allocator,
     num_species: u8,
 
@@ -21,50 +22,22 @@ pub const Simulation = struct {
         var world = try World.init(allocator, world_size);
         errdefer world.deinit(allocator);
 
-        var new_world = try World.init(allocator, world_size);
-        errdefer new_world.deinit(allocator);
-
         setup(&world, num_species);
 
-        for (0..world_size * world_size) |_| {
-            new_world.cells.appendAssumeCapacity(.{.species = 0, .last_mutation = 0, .times_mutated = 0});
-        }
-
-        return Simulation{ .world_size = world_size, .world = world, .new_world = new_world, .allocator = allocator, .num_species = num_species };
+        return Simulation{ .world_size = world_size, .world = world, .allocator = allocator, .num_species = num_species };
     }
 
     pub fn reset(self: *Simulation) void {
         self.world.cells.clearRetainingCapacity();
         setup(&self.world, self.num_species);
-
-        for (0..self.world_size * self.world_size) |i| {
-            self.new_world.cells.set(i, .{.species = 0, .last_mutation = 0, .times_mutated = 0});
-        }
     }
 
     pub fn deinit(self: *Simulation) void {
         self.world.deinit(self.allocator);
-        self.new_world.deinit(self.allocator);
     }
 
     pub fn run(self: *Simulation, max_iterations: usize, allocator: Allocator) !void {
-        var current_world = try World.init(allocator, self.world_size);
-        defer current_world.deinit(allocator);
-
-        for (self.world.cells.items(.species)) |species| {
-            current_world.cells.appendAssumeCapacity(.{.species = species, .last_mutation = 0, .times_mutated = 0});
-        }
-
-        try self.run_single(&self.world, &self.new_world, max_iterations, allocator);
-        try self.run_threaded(&current_world, &self.new_world, max_iterations, allocator);
-
-        std.debug.assert(self.world.equals(&current_world));
-
-        // if (self.world_size >= 100) {
-        //     try self.run_threaded(&self.world, &self.new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        // } else {
-        //     try self.run_single(&self.world, &self.new_world, @min(self.world_size * self.world_size * 100, max_iterations), allocator);
-        // }
+        try self.run_single(&self.world, max_iterations, allocator);
     }
 
     pub fn render(self: *const Simulation, image: *Image, strength: f32) !usize {
@@ -103,20 +76,31 @@ pub const Simulation = struct {
         return max - 1;
     }
 
-    fn run_single(self: *const Simulation, current_world: *World, new_world: *World, max_iterations: usize, allocator: Allocator) !void {
+    fn run_single(self: *const Simulation, current_world: *World, max_iterations: usize, allocator: Allocator) !void {
         var arena = std.heap.ArenaAllocator.init(allocator);
         defer arena.deinit();
 
         const arena_alloc = arena.allocator();
 
-        var to_check = std.AutoArrayHashMap(usize, void).init(allocator);
-        defer to_check.deinit();
+        var to_check = std.AutoArrayHashMapUnmanaged(usize, void){};
+        defer to_check.deinit(allocator);
 
-        try to_check.ensureTotalCapacity(self.world_size * self.world_size);
+        try to_check.ensureTotalCapacity(allocator, @intCast(self.world_size * self.world_size));
 
         for (0..self.world_size * self.world_size) |i| {
-            try to_check.put(i, {});
+            @branchHint(.likely);
+
+            to_check.putAssumeCapacityNoClobber(i, {});
         }
+
+        const seed = std.crypto.random.int(usize);
+        var prng = std.Random.DefaultPrng.init(seed);
+        const random = prng.random();
+
+        const keys = to_check.keys();
+        random.shuffle(usize, keys);
+
+        try to_check.reIndex(allocator);
 
         var mutated = true;
         var iterations: usize = 1;
@@ -128,167 +112,80 @@ pub const Simulation = struct {
         var ns_prev: f64 = 0;
 
         while (mutated and iterations <= max_iterations) : (iterations += 1) {
-            @branchHint(std.builtin.BranchHint.likely);
+            @branchHint(.likely);
 
-            mutated = try self.run_iteration(current_world, new_world, &to_check, iterations, arena_alloc);
+            mutated = try self.run_iteration(current_world, &to_check, iterations, arena_alloc);
 
-            const temp = current_world.*;
-            current_world.* = new_world.*;
-            new_world.* = temp;
+            if (iterations % 256 == 0) {
+                @branchHint(.unlikely);
 
-            _ = arena.reset(.retain_capacity);
-            const ns = timer.read();
-            const ns_float: f64 = @floatFromInt(ns);
-            const iter_float: f64 = @floatFromInt(iterations);
-            try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >9.3}, IPS: {d: >9.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
-            ns_prev = ns_float;
-        }
-    }
-
-    fn run_threaded(self: *const Simulation, current_world: *World, new_world: *World, max_iterations: usize, allocator: Allocator) !void {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-        const arena_alloc = arena.allocator();
-
-        var thread_allocator = std.heap.ThreadSafeAllocator{ .child_allocator = arena_alloc };
-        const thread_alloc = thread_allocator.allocator();
-
-        var pool: std.Thread.Pool = undefined;
-        const num_threads = std.Thread.getCpuCount() catch 4;
-        try pool.init(.{ .allocator = allocator, .n_jobs = num_threads });
-        defer pool.deinit();
-
-        var wg: std.Thread.WaitGroup = .{};
-
-        var mutated: u8 = 1;
-        var iterations: usize = 1;
-
-        const stdout = std.io.getStdOut().writer();
-        _ = try stdout.write("\n");
-
-        var timer = try std.time.Timer.start();
-        var ns_prev: f64 = 0;
-
-        while (mutated == 1 and iterations <= max_iterations) : (iterations += 1) {
-            @branchHint(std.builtin.BranchHint.likely);
-
-            mutated = 0;
-            for (0..self.world_size) |i| {
-                pool.spawnWg(&wg, struct {
-                    fn run(sim: *const Simulation, _current_world: *World, _new_world: *World, _iteration: usize, _allocator: Allocator, _chunk_start: usize, _chunk_size: usize, _mutated: *u8) void {
-                        const result = sim.run_iteration_chunk(_current_world, _new_world, _iteration, _allocator, _chunk_start, _chunk_size) catch 2;
-                        _ = @cmpxchgStrong(u8, _mutated, 0, result, .monotonic, .monotonic);
-                    }
-                }.run, .{ self, current_world, new_world, iterations, thread_alloc, i * self.world_size, self.world_size, &mutated });
+                try to_check.reIndex(allocator);
             }
 
-            wg.wait();
-            wg.reset();
-
-            const temp = current_world.*;
-            current_world.* = new_world.*;
-            new_world.* = temp;
-
             _ = arena.reset(.retain_capacity);
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
             const iter_float: f64 = @floatFromInt(iterations);
-            try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >9.3}, IPS: {d: >9.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
+            try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >12.3}, IPS: {d: >9.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
             ns_prev = ns_float;
         }
     }
 
-    fn run_iteration(self: *const Simulation, current_world: *World, new_world: *World, to_check: *std.AutoArrayHashMap(usize, void), iteration: usize, allocator: Allocator) !bool {
+    fn run_iteration(self: *const Simulation, current_world: *World, to_check: *std.AutoArrayHashMapUnmanaged(usize, void), iteration: usize, allocator: Allocator) !bool {
         var arena = std.heap.ArenaAllocator.init(allocator);
         const arena_alloc = arena.allocator();
 
-        var to_sleep = std.AutoHashMap(usize, void).init(arena_alloc);
-        var to_wake = std.AutoHashMap(usize, void).init(arena_alloc);
+        var to_sleep = try std.ArrayList(usize).initCapacity(arena_alloc, to_check.count());
+        var to_wake = std.AutoArrayHashMap(usize, void).init(arena_alloc);
+        try to_wake.ensureTotalCapacity(to_check.count());
 
         var sleep = false;
-
         var mutated = false;
 
-        const species_bucket = try arena_alloc.alloc(u8, self.num_species);
-        for (to_check.keys()) |i| {
-            const new_species = self.getNewSpecies(current_world.cells.items(.species), i, species_bucket, iteration, &sleep);
+        const species = current_world.cells.items(.species);
 
-            const current_cell = current_world.cells.get(i);
+        const species_bucket = try arena_alloc.alloc(u8, self.num_species);
+
+        for (to_check.keys()) |i| {
+            @branchHint(.likely);
+
+            const new_species = self.getNewSpecies(species, i, species_bucket, iteration, &sleep);
 
             if (sleep) {
-                try to_sleep.put(i, {});
+                to_sleep.appendAssumeCapacity(i);
             }
 
-            new_world.cells.items(.species)[i] = new_species;
-            if (current_cell.species != new_species) {
+            if (species[i] != new_species) {
                 mutated = true;
 
-                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated + 1;
-                new_world.cells.items(.last_mutation)[i] = iteration;
+                species[i] = new_species;
+                current_world.cells.items(.times_mutated)[i] += 1;
+                current_world.cells.items(.last_mutation)[i] = iteration;
 
                 inline for (getSurrounding(@intCast(self.world_size), i)) |n| {
                     try to_wake.put(n, {});
                 }
-                try to_wake.put(i, {});
-            } else {
-                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated;
-                new_world.cells.items(.last_mutation)[i] = current_cell.last_mutation;
             }
         }
 
-        var sleep_iter = to_sleep.keyIterator();
-
-        while (sleep_iter.next()) |k| {
-            _ = to_check.swapRemove(k.*);
+        for (to_sleep.items) |k| {
+            _ = to_check.swapRemove(k);
         }
 
-        var wake_iter = to_wake.keyIterator();
-
-        while(wake_iter.next()) |k| {
-            try to_check.put(k.*, {});
+        for (to_wake.keys()) |k| {
+            to_check.putAssumeCapacity(k, {});
         }
+
 
         return mutated;
     }
 
-    fn run_iteration_chunk(self: *const Simulation, current_world: *World, new_world: *World, iteration: usize, allocator: Allocator, chunk_start: usize, chunk_size: usize) !u8 {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-
-        const arena_alloc = arena.allocator();
-        
-        var mutated: u8 = 0;
-
-        var sleep = false;
-
-        const species_bucket = try arena_alloc.alloc(u8, self.num_species);
-        for (chunk_start..(chunk_size + chunk_start)) |i| {
-            const new_species = self.getNewSpecies(current_world.cells.items(.species), i, species_bucket, iteration, &sleep);
-
-            const current_cell = current_world.cells.get(i);
-
-            new_world.cells.items(.species)[i] = new_species;
-            if (current_cell.species != new_species) {
-                mutated = 1;
-
-                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated + 1;
-                new_world.cells.items(.last_mutation)[i] = iteration;
-
-            } else {
-                new_world.cells.items(.times_mutated)[i] = current_cell.times_mutated;
-                new_world.cells.items(.last_mutation)[i] = current_cell.last_mutation;
-            }
-        }
-
-        return mutated;
-    }
-
-    inline fn getNewSpecies(self: *const Simulation, cells: []u8, index: usize, bucket: []u8, seed: usize, sleep: *bool) u8 {
+    inline fn getNewSpecies(self: *const Simulation, cells: []u8, index: usize, bucket: []u8, iteration: usize, sleep: *bool) u8 {
         @memset(bucket, 0);
 
         sleep.* = false;
 
-        const world_size: i128 = @intCast(self.world_size);
-        const surrounding = getSurrounding(world_size, index);
+        const surrounding = getSurrounding(@intCast(self.world_size), index);
 
         bucket[cells[surrounding[0]]] += 1;
         bucket[cells[surrounding[1]]] += 1;
@@ -301,7 +198,17 @@ pub const Simulation = struct {
         bucket[cells[surrounding[6]]] += 1;
         bucket[cells[surrounding[7]]] += 1;
 
-        var prng = std.Random.Xoshiro256.init((cells[index] ^ seed) * 1099511628211);
+        // ignore overflow
+        const seed = blk: {
+            var seed: u64 = @intCast(index);
+            seed = @mulWithOverflow(seed, 1099511628211)[0];
+            seed ^= iteration;
+            seed = @mulWithOverflow(seed, 1099511628211)[0];
+
+            break :blk seed;
+        };
+
+        var prng = std.Random.RomuTrio.init(seed);
         const test_rand = prng.random();
 
         var max_idx: usize = 0;
@@ -310,7 +217,7 @@ pub const Simulation = struct {
             if (max_count < count) {
                 max_idx = n;
                 max_count = count;
-            } else if (max_count == count and test_rand.boolean()) {
+            } else if (max_count == count and test_rand.int(i8) >= 0) {
                 max_idx = n;
                 max_count = count;
             }
@@ -322,9 +229,9 @@ pub const Simulation = struct {
         return @intCast(max_idx);
     }
 
-    inline fn getSurrounding(world_size: i128, index: usize) [8]usize {
-        const x: i128 = @intCast(@divFloor(index, world_size));
-        const y: i128 = @intCast(@mod(index, world_size));
+    inline fn getSurrounding(world_size: SignedWorldSize, index: usize) [8]usize {
+        const x: SignedWorldSize = @intCast(@divFloor(index, world_size));
+        const y: SignedWorldSize = @intCast(@mod(index, world_size));
 
         return .{
             @intCast(@mod(x - 1, world_size) * world_size + @mod(y - 1, world_size)),
@@ -346,7 +253,7 @@ pub const Simulation = struct {
         const rand = prng.random();
 
         for (0..world.world_size * world.world_size) |_| {
-            const species = rand.intRangeAtMost(u8, 0, num_species - 1);
+            const species = rand.uintLessThan(u8, num_species);
             world.cells.appendAssumeCapacity(.{.species = species, .last_mutation = 0, .times_mutated = 0});
         }
     }
