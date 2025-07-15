@@ -68,7 +68,7 @@ pub fn main() !void {
             }),
             .target = .{
                 .action = .{
-                    .exec = run_genesheep,
+                    .exec = runGenesheep,
                 },
             },
         },
@@ -78,7 +78,7 @@ pub fn main() !void {
 
 }
 
-fn run_genesheep() !void {
+fn runGenesheep() !void {
     const max_iterations: usize = blk: {
         if (config.max_iterations == 0) {
             break :blk std.math.maxInt(usize);
@@ -93,7 +93,28 @@ fn run_genesheep() !void {
         break :blk @intCast(config.batch);
     };
 
+    const sim_run_buffer = sim_run_buf: {
+        const bitset_buffer = blk: {
+            const num_bits = config.world_size * config.world_size;
+            const numerator = num_bits + (@typeInfo(std.DynamicBitSetUnmanaged.MaskInt).int.bits - 1);
+            const usize_per_bitset = (numerator / @typeInfo(std.DynamicBitSetUnmanaged.MaskInt).int.bits) + 1;
+            break :blk (usize_per_bitset * 8) * 3;
+        };
+
+        const indices_buffer = config.world_size * config.world_size * (@typeInfo(usize).int.bits / 8);
+        const species_buffer = config.num_species;
+
+        break :sim_run_buf bitset_buffer + indices_buffer + species_buffer;
+    };
+
+    const buffer_size = sim_run_buffer;
+
     const allocator = config.alloc.?;
+    const buffer = try allocator.alloc(u8, buffer_size);
+    defer allocator.free(buffer);
+
+    var fixed_buffer = std.heap.FixedBufferAllocator.init(buffer);
+    const buffer_alloc = fixed_buffer.allocator();
 
     var sim = try Simulation.init(config.world_size, config.num_species, allocator);
     defer sim.deinit(allocator);
@@ -110,7 +131,7 @@ fn run_genesheep() !void {
             break;
         }
 
-        if (sim.run(max_iterations, allocator)) {
+        if (sim.run(max_iterations, buffer_alloc)) {
             @branchHint(.likely);
             var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
             defer image.deinit();
@@ -126,8 +147,10 @@ fn run_genesheep() !void {
             try image.writeToFilePath(file_name, .{ .png = .{} });
             try stdout.print("Saved image {s}\n", .{file_name});
         } else |err| {
-            try stdout.print("Error: {any}", .{err});
+            try stdout.print("Error: {any}\n", .{err});
         }
+
+        std.debug.assert(fixed_buffer.end_index == 0);
 
         sim.reset();
     }

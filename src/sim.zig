@@ -33,7 +33,7 @@ pub const Simulation = struct {
     }
 
     pub fn run(self: *Simulation, max_iterations: usize, allocator: Allocator) !void {
-        try self.run_single(&self.world, max_iterations, allocator);
+        try self.runSingle(&self.world, max_iterations, allocator);
     }
 
     pub fn render(
@@ -77,17 +77,12 @@ pub const Simulation = struct {
         return max - 1;
     }
 
-    fn run_single(
+    fn runSingle(
         self: *const Simulation,
         current_world: *World,
         max_iterations: usize,
-        allocator: Allocator
+        allocator: Allocator,
     ) !void {
-        var arena = std.heap.ArenaAllocator.init(allocator);
-        defer arena.deinit();
-
-        const arena_alloc = arena.allocator();
-
         var to_check = try std.DynamicBitSetUnmanaged.initFull(allocator, self.world_size * self.world_size);
         defer to_check.deinit(allocator);
 
@@ -113,7 +108,7 @@ pub const Simulation = struct {
         while (mutated and iterations <= max_iterations) : (iterations += 1) {
             @branchHint(.likely);
 
-            mutated = try self.run_iteration(current_world, &to_check, &to_sleep, &to_wake, iterations, random, arena_alloc);
+            mutated = try self.runIteration(current_world, &to_check, &to_sleep, &to_wake, iterations, random, allocator);
 
             to_check.setIntersection(to_sleep);
             to_check.setUnion(to_wake);
@@ -121,7 +116,6 @@ pub const Simulation = struct {
             to_sleep.setAll();
             to_wake.unsetAll();
 
-            _ = arena.reset(.retain_capacity);
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
             const iter_float: f64 = @floatFromInt(iterations);
@@ -134,7 +128,7 @@ pub const Simulation = struct {
         }
     }
 
-    fn run_iteration(
+    fn runIteration(
         self: *const Simulation,
         current_world: *World,
         to_check: *std.DynamicBitSetUnmanaged,
@@ -142,17 +136,20 @@ pub const Simulation = struct {
         to_wake: *std.DynamicBitSetUnmanaged,
         iteration: usize,
         random: std.Random,
-        allocator: Allocator
+        allocator: Allocator,
     ) !bool {
         var sleep = false;
         var mutated = false;
 
         const species = current_world.cells.items(.species);
 
-        const species_bucket = try allocator.alloc(u8, self.num_species);
-
         const count = to_check.count();
+        std.debug.assert(count <= self.world_size * self.world_size);
         const random_indices = try allocator.alloc(usize, count);
+        defer allocator.free(random_indices);
+
+        const species_bucket = try allocator.alloc(u8, self.num_species);
+        defer allocator.free(species_bucket);
 
         var bit_iter = to_check.iterator(.{});
 
