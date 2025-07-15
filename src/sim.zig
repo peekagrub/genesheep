@@ -37,7 +37,12 @@ pub const Simulation = struct {
         try self.run_single(&self.world, max_iterations, allocator);
     }
 
-    pub fn render(self: *const Simulation, image: *Image, strength: f32, allocator: Allocator) !usize {
+    pub fn render(
+        self: *const Simulation, 
+        image: *Image, 
+        strength: f32, 
+        allocator: Allocator
+    ) !usize {
         const seed = std.crypto.random.int(u64);
         var prng = std.Random.DefaultPrng.init(seed);
         const rand = prng.random();
@@ -180,7 +185,14 @@ pub const Simulation = struct {
         return mutated;
     }
 
-    fn getNewSpecies(self: *const Simulation, cells: []u8, index: usize, bucket: []u8, random: std.Random, sleep: *bool) u8 {
+    fn getNewSpecies(
+        self: *const Simulation, 
+        cells: []u8, 
+        index: usize, 
+        bucket: []u8, 
+        random: std.Random, 
+        sleep: *bool
+    ) u8 {
         @memset(bucket, 0);
 
         sleep.* = false;
