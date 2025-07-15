@@ -96,7 +96,7 @@ fn run_genesheep() !void {
     const allocator = config.alloc.?;
 
     var sim = try Simulation.init(config.world_size, config.num_species, allocator);
-    defer sim.deinit();
+    defer sim.deinit(allocator);
 
     const stdout = std.io.getStdOut().writer();
     _ = try stdout.write("\u{1b}[?25l");
@@ -115,7 +115,7 @@ fn run_genesheep() !void {
             var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
             defer image.deinit();
 
-            const iterations = try sim.render(&image, config.mut_strength);
+            const iterations = try sim.render(&image, config.mut_strength, allocator);
 
             const time = c.time(null);
             const local_time = c.localtime(&time);

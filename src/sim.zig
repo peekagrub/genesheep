@@ -13,7 +13,6 @@ const Cell = @import("world.zig").Cell;
 pub const Simulation = struct {
     world_size: usize,
     world: World,
-    allocator: Allocator,
     num_species: u8,
 
     pub fn init(world_size: usize, num_species: u8, allocator: Allocator) !Simulation {
@@ -22,7 +21,7 @@ pub const Simulation = struct {
 
         setup(&world, num_species);
 
-        return Simulation{ .world_size = world_size, .world = world, .allocator = allocator, .num_species = num_species };
+        return Simulation{ .world_size = world_size, .world = world, .num_species = num_species };
     }
 
     pub fn reset(self: *Simulation) void {
@@ -30,15 +29,15 @@ pub const Simulation = struct {
         setup(&self.world, self.num_species);
     }
 
-    pub fn deinit(self: *Simulation) void {
-        self.world.deinit(self.allocator);
+    pub fn deinit(self: *Simulation, allocator: Allocator) void {
+        self.world.deinit(allocator);
     }
 
     pub fn run(self: *Simulation, max_iterations: usize, allocator: Allocator) !void {
         try self.run_single(&self.world, max_iterations, allocator);
     }
 
-    pub fn render(self: *const Simulation, image: *Image, strength: f32) !usize {
+    pub fn render(self: *const Simulation, image: *Image, strength: f32, allocator: Allocator) !usize {
         const seed = std.crypto.random.int(u64);
         var prng = std.Random.DefaultPrng.init(seed);
         const rand = prng.random();
@@ -51,8 +50,8 @@ pub const Simulation = struct {
 
         max += 1;
 
-        var color_list = try self.allocator.alloc(color.Rgba32, max);
-        defer self.allocator.free(color_list);
+        var color_list = try allocator.alloc(color.Rgba32, max);
+        defer allocator.free(color_list);
 
         var iteration_color = color.Hsv{ .hue = @floatFromInt(rand.intRangeAtMost(i32, 0, 360)), .saturation = rand.float(f32), .value = rand.float(f32) };
         for (0..max) |i| {
