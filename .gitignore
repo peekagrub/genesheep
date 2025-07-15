@@ -1,3 +1,5 @@
 *.png
 zig-out/
 .zig-cache/
+flamegraph.*
+perf.*
