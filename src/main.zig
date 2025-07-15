@@ -141,11 +141,22 @@ fn runGenesheep() !void {
             const time = c.time(null);
             const local_time = c.localtime(&time);
 
-            const file_name = try format_time(local_time, sim.total_iterations, allocator);
-            defer allocator.free(file_name);
+            const file_name_base = try format_time(local_time, sim.total_iterations, allocator);
+            defer allocator.free(file_name_base);
 
-            try image.writeToFilePath(file_name, .{ .png = .{} });
-            try stdout.print("Saved image {s}\n", .{file_name});
+            const image_file_name = try std.fmt.allocPrint(allocator, "{s}.png", .{file_name_base});
+            defer allocator.free(image_file_name);
+
+            const json_file_name = try std.fmt.allocPrint(allocator, "{s}.json", .{file_name_base});
+            defer allocator.free(json_file_name);
+
+            try image.writeToFilePath(image_file_name, .{ .png = .{} });
+
+            const json_file = try std.fs.cwd().createFile(json_file_name, .{});
+            defer json_file.close();
+
+            _ = try std.json.stringify(sim, .{}, json_file.writer());
+            try stdout.print("Saved simulation {s}\n", .{file_name_base});
         } else |err| {
             try stdout.print("Error: {any}\n", .{err});
         }
@@ -164,5 +175,5 @@ fn format_time(local_time: [*c]c.struct_tm, iterations: usize, allocator: std.me
     const minute: u8 = @intCast(local_time.*.tm_min);
     const second: u8 = @intCast(local_time.*.tm_sec);
 
-    return std.fmt.allocPrint(allocator, "{d}-{d:0>2}-{:0>2} {:0>2}-{:0>2}-{d:0>2}_i{d}.png", .{ year, month, day, hour, minute, second, iterations });
+    return std.fmt.allocPrint(allocator, "{d}-{d:0>2}-{:0>2} {:0>2}-{:0>2}-{d:0>2}_i{d}", .{ year, month, day, hour, minute, second, iterations });
 }
