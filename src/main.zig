@@ -151,12 +151,13 @@ fn runGenesheep() !void {
             defer allocator.free(json_file_name);
 
             try image.writeToFilePath(image_file_name, .{ .png = .{} });
+            try stdout.print("Saved image {s}\n", .{image_file_name});
 
             const json_file = try std.fs.cwd().createFile(json_file_name, .{});
             defer json_file.close();
 
             _ = try std.json.stringify(sim, .{}, json_file.writer());
-            try stdout.print("Saved simulation {s}\n", .{file_name_base});
+            try stdout.print("Saved simulation data {s}\n", .{json_file_name});
         } else |err| {
             try stdout.print("Error: {any}\n", .{err});
         }
