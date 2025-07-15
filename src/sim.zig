@@ -197,7 +197,7 @@ pub const Simulation = struct {
 
         sleep.* = false;
 
-        const surrounding = getSurrounding(@intCast(self.world_size), index);
+        const surrounding = getSurrounding(self.world_size, index);
 
         bucket[cells[surrounding[0]]] += 1;
         bucket[cells[surrounding[1]]] += 1;
