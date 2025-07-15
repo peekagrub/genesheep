@@ -8,7 +8,6 @@ const color = zigimg.color;
 const IterationError = error{IterationError}.IterationError;
 
 const World = @import("world.zig").World;
-const Cell = @import("world.zig").Cell;
 
 pub const Simulation = struct {
     world_size: usize,
@@ -128,6 +127,10 @@ pub const Simulation = struct {
             const iter_float: f64 = @floatFromInt(iterations);
             try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >10.3}, IPS: {d: >10.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
             ns_prev = ns_float;
+        } else if (iterations >= max_iterations) {
+            @branchHint(.cold);
+
+            return error.IterationError;
         }
     }
 
@@ -228,7 +231,7 @@ pub const Simulation = struct {
         return @intCast(max_idx);
     }
 
-    fn getSurrounding(world_size: usize, index: usize) [8]usize {
+    inline fn getSurrounding(world_size: usize, index: usize) [8]usize {
         const x = @divFloor(index, world_size);
         const y = @mod(index, world_size);
 
