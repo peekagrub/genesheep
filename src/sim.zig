@@ -224,20 +224,20 @@ pub const Simulation = struct {
     }
 
     inline fn getSurrounding(world_size: usize, index: usize) [8]usize {
-        const x = @divFloor(index, world_size);
-        const y = @mod(index, world_size);
+        const x = @mod(index, world_size);
+        const y = @divFloor(index, world_size);
 
         return .{
-            @mod(x + world_size - 1, world_size) * world_size + @mod(y + world_size - 1, world_size),
-            @mod(x + world_size - 1, world_size) * world_size + y,
-            @mod(x + world_size - 1, world_size) * world_size + @mod(y + 1, world_size),
+            @mod(y + world_size - 1, world_size) * world_size + @mod(x + world_size - 1, world_size),
+            @mod(y + world_size - 1, world_size) * world_size + x,
+            @mod(y + world_size - 1, world_size) * world_size + @mod(x + 1, world_size),
 
-            x * world_size + @mod(y + world_size - 1, world_size),
-            x * world_size + @mod(y + 1, world_size),
+            y * world_size + @mod(x + world_size - 1, world_size),
+            y * world_size + @mod(x + 1, world_size),
 
-            @mod(x + 1, world_size) * world_size + @mod(y + world_size - 1, world_size),
-            @mod(x + 1, world_size) * world_size + y,
-            @mod(x + 1, world_size) * world_size + @mod(y + 1, world_size),
+            @mod(y + 1, world_size) * world_size + @mod(x + world_size - 1, world_size),
+            @mod(y + 1, world_size) * world_size + x,
+            @mod(y + 1, world_size) * world_size + @mod(x + 1, world_size),
         };
     }
 
