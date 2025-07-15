@@ -13,6 +13,7 @@ pub const Simulation = struct {
     world_size: usize,
     world: World,
     num_species: u8,
+    total_iterations: usize = 0,
 
     pub fn init(world_size: usize, num_species: u8, allocator: Allocator) !Simulation {
         var world = try World.init(allocator, world_size);
@@ -26,6 +27,7 @@ pub const Simulation = struct {
     pub fn reset(self: *Simulation) void {
         self.world.cells.clearRetainingCapacity();
         setup(&self.world, self.num_species);
+        self.total_iterations = 0;
     }
 
     pub fn deinit(self: *Simulation, allocator: Allocator) void {
@@ -41,24 +43,17 @@ pub const Simulation = struct {
         image: *Image, 
         strength: f32, 
         allocator: Allocator
-    ) !usize {
+    ) !void {
         const seed = std.crypto.random.int(u64);
         var prng = std.Random.DefaultPrng.init(seed);
         const rand = prng.random();
 
-        var max: usize = 0;
-        for (self.world.cells.items(.last_mutation)) |last_mutation| {
-            if (last_mutation > max)
-                max = last_mutation;
-        }
 
-        max += 1;
-
-        var color_list = try allocator.alloc(color.Rgba32, max);
+        var color_list = try allocator.alloc(color.Rgba32, self.total_iterations);
         defer allocator.free(color_list);
 
         var iteration_color = color.Hsv{ .hue = @floatFromInt(rand.intRangeAtMost(i32, 0, 360)), .saturation = rand.float(f32), .value = rand.float(f32) };
-        for (0..max) |i| {
+        for (0..self.total_iterations) |i| {
             color_list[i] = color.Rgba32.from.color(iteration_color.toRgb());
 
             iteration_color.hue += (2 * rand.float(f32) * strength) - strength;
@@ -73,12 +68,10 @@ pub const Simulation = struct {
         for (self.world.cells.items(.last_mutation), image.pixels.rgba32) |last_mutation, *pixel| {
             pixel.* = color_list[last_mutation];
         }
-
-        return max - 1;
     }
 
     fn runSingle(
-        self: *const Simulation,
+        self: *Simulation,
         current_world: *World,
         max_iterations: usize,
         allocator: Allocator,
@@ -126,6 +119,8 @@ pub const Simulation = struct {
 
             return error.IterationError;
         }
+
+        self.total_iterations = iterations;
     }
 
     fn runIteration(

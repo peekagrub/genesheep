@@ -136,12 +136,12 @@ fn runGenesheep() !void {
             var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
             defer image.deinit();
 
-            const iterations = try sim.render(&image, config.mut_strength, allocator);
+            try sim.render(&image, config.mut_strength, allocator);
 
             const time = c.time(null);
             const local_time = c.localtime(&time);
 
-            const file_name = try format_time(local_time, iterations, allocator);
+            const file_name = try format_time(local_time, sim.total_iterations, allocator);
             defer allocator.free(file_name);
 
             try image.writeToFilePath(file_name, .{ .png = .{} });
