@@ -10,3 +10,9 @@ An zig implementation of the GeneSheep algorithm by Krythom https://github.com/K
   -m, --mut_str <VALUE>          The mutation strenght of the colors. Default is 1.0
   -b, --batch <VALUE>            Number of batches to run, negative numbers mean maximum number of iterations. Default is 0.
 ```
+## Building
+The zig toolchain version `0.14.1` is needed to build this executable.
+
+For maximum performance when running build with `zig build --release=fast`.
+
+The executable will be located at `./zig-out/bin/genesheep`.
