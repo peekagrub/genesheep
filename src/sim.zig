@@ -69,6 +69,30 @@ pub const Simulation = struct {
             pixel.* = color_list[last_mutation];
         }
     }
+    
+    pub fn jsonStringify(self: Simulation, jw: anytype) !void {
+        try jw.beginObject();
+        try jw.objectField("totalIterations");
+        try jw.write(self.total_iterations);
+        try jw.objectField("worldX");
+        try jw.write(self.world_size);
+        try jw.objectField("worldY");
+        try jw.write(self.world_size);
+        try jw.objectField("worldY");
+        try jw.beginArray();
+        for (0..self.world.cells.len) |i| {
+            const cell = self.world.cells.get(i);
+
+            try jw.beginObject();
+            try jw.objectField("lastUpdateFrame");
+            try jw.write(cell.last_mutation);
+            try jw.objectField("numUpdates");
+            try jw.write(cell.times_mutated);
+            try jw.endObject();
+        }
+        try jw.endArray();
+        try jw.endObject();
+    }
 
     fn runSingle(
         self: *Simulation,
@@ -93,7 +117,6 @@ pub const Simulation = struct {
         var iterations: usize = 1;
 
         const stdout = std.io.getStdOut().writer();
-        _ = try stdout.write("\n");
 
         var timer = try std.time.Timer.start();
         var ns_prev: f64 = 0;
@@ -112,13 +135,15 @@ pub const Simulation = struct {
             const ns = timer.read();
             const ns_float: f64 = @floatFromInt(ns);
             const iter_float: f64 = @floatFromInt(iterations);
-            try stdout.print("\u{1b}[1A\u{1b}[2KIteration: {d: >8}, Durration: {d: >8.3}s, FPS: {d: >10.3}, IPS: {d: >10.3}\n", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
+            try stdout.print("\u{1b}[2KIteration: {d: >8}, Duration: {d: >8.3}s, FPS: {d: >10.3}, IPS: {d: >10.3}\r", .{ iterations, ns_float / std.time.ns_per_s, std.time.ns_per_s / (ns_float - ns_prev), (iter_float * std.time.ns_per_s / ns_float) });
             ns_prev = ns_float;
         } else if (iterations >= max_iterations) {
             @branchHint(.cold);
 
             return error.IterationError;
         }
+
+        try stdout.writeByte('\n');
 
         self.total_iterations = iterations;
     }
