@@ -10,7 +10,7 @@ const c = @cImport({
 });
 
 var config = struct {
-    world_size: usize = 10,
+    world_size: usize = 500,
     max_iterations: usize = 0,
     num_species: u8 = 5,
     mut_strength: f32 = 1.0,
@@ -87,7 +87,7 @@ fn run_genesheep() !void {
     };
 
     const batch: usize = blk: {
-        if (config.batch < 0) {
+        if (config.batch <= 0) {
             break :blk std.math.maxInt(usize);
         }
         break :blk @intCast(config.batch);
@@ -111,6 +111,7 @@ fn run_genesheep() !void {
         }
 
         if (sim.run(max_iterations, allocator)) {
+            @branchHint(.likely);
             var image = try zigimg.Image.create(allocator, config.world_size, config.world_size, .rgba32);
             defer image.deinit();
 
